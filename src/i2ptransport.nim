@@ -7,7 +7,6 @@ import std/strformat
 import chronos, chronicles, strutils
 import stew/[
   byteutils,
-  endians2,
   results,
   objects
 ]
@@ -135,6 +134,12 @@ proc createAcceptStream(transp: StreamTransport, settings: I2PSessionSettings): 
     sam.Message.streamAccept(settings.nickname)
     .build()
   )
+  let serverReply = sam.Answer.fromString(await transp.readLine())
+  if serverReply.kind != StreamStatus:
+    raise newException(I2PError, fmt"Invalid stream create reply: {serverReply}")
+  if serverReply.stream.kind != Ok:
+    raise newException(I2PError, fmt"Unsuccessful stream accept: {serverReply.session}")
+
 
 proc checkControlSession(self: I2PTransport) {.async, gcsafe.} =
   if self.controlSessionConnection.isNil:
@@ -205,10 +210,50 @@ method start*(
 method accept*(self: I2PTransport): Future[Connection] {.async, gcsafe.} =
   await checkControlSession(self)
   let transp = await connectToI2PServer(self.transportAddress)
-
+  await createAcceptStream(transp, self.settings)
+  return await self.tcpTransport.connHandler(transp, Opt.none(MultiAddress), Direction.In)
 
 method stop*(self: I2PTransport) {.async, gcsafe.} =
-  discard
+  await procCall Transport(self).stop() # call base
+  await self.tcpTransport.stop()
 
 method handles*(t: I2PTransport, address: MultiAddress): bool {.gcsafe.} =
-  discard
+  if procCall Transport(t).handles(address):
+    return handlesDial(address) or handlesStart(address)
+
+type
+  I2PSwitch* = ref object of Switch
+
+proc new*(
+  Self: typedesc[I2PSwitch],
+  i2pServer: TransportAddress,
+  settings: I2PSessionSettings,
+  rng: ref HmacDrbgContext,
+  addresses: seq[MultiAddress] = @[],
+  flags: set[ServerFlags] = {}): Self
+  {.raises: [LPError, Defect], public.} =
+    var builder = SwitchBuilder.new()
+        .withRng(rng)
+        .withTransport(proc(upgr: Upgrade): Transport = I2PTransport.new(i2pServer, settings, flags, upgr))
+    if addresses.len != 0:
+        builder = builder.withAddresses(addresses)
+    let switch = builder.withMplex()
+        .withNoise()
+        .build()
+    let torSwitch = Self(
+      peerInfo: switch.peerInfo,
+      ms: switch.ms,
+      transports: switch.transports,
+      connManager: switch.connManager,
+      peerStore: switch.peerStore,
+      dialer: Dialer.new(switch.peerInfo.peerId, switch.connManager, switch.transports, switch.ms, nil),
+      nameResolver: nil)
+
+    torSwitch.connManager.peerStore = switch.peerStore
+    return torSwitch
+
+method addTransport*(s: I2PSwitch, t: Transport) =
+  doAssert(false, "not implemented!")
+
+method getTorTransport*(s: I2PSwitch): Transport {.base.} =
+  return s.transports[0]
