@@ -11,4 +11,4 @@ skipDirs      = @["tests", "examples"]
 
 requires "nim >= 1.2.0",
          "libp2p",
-         "https://github.com/gabbhack/sam_protocol"
+         "https://github.com/gabbhack/sam_protocol >= 0.1.1"
