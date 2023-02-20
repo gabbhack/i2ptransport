@@ -9,8 +9,6 @@
 nimble install https://github.com/gabbhack/i2ptransport
 ```
 
-[Documentation](https://gabb.eu.org/i2ptransport)
-
 [Examples](https://github.com/gabbhack/i2ptransport/tree/master/examples)
 
 ---
