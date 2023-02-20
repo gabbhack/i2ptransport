@@ -3,7 +3,7 @@ when (NimMajor, NimMinor) < (1, 4):
 else:
   {.push raises: [].}
 
-import std/strformat
+import std/[strformat, options]
 import chronos, chronicles, strutils
 import stew/[
   byteutils,
@@ -30,19 +30,20 @@ import sam_protocol as sam
 
 
 type
-  I2PSessionSettings = object
-    nickname: string
+  I2PSettings* = object
     inboundLength: int
     outboundLength: int
     inboundQuantity: int
     outboundQuantity: int
+    nickname: string
 
   I2PTransport* = ref object of Transport
     controlSessionConnection: Connection
     streamForwardConnection: Connection
     transportAddress: TransportAddress
     tcpTransport: TcpTransport
-    settings: I2PSessionSettings
+    settings: I2PSettings
+    publicDestination: Option[string]
 
   TransportStartError* = object of transport.TransportError
 
@@ -51,21 +52,22 @@ type
 
 const
   I2P* = mapAnd(DNS, mapEq("http"))
+  TCPIP = mapAnd(IP, mapEq("tcp"))
   SamMinVersion = "3.1"
   SamMaxVersion = "3.1"
 
 proc init*(
-  Self: typedesc[I2PSessionSettings],
+  Self: typedesc[I2PSettings],
   nickname: string,
   inboundLength = 3,
-  outboindLength = 3,
+  outboundLength = 3,
   inboundQuantity = 5,
   outboundQuantity = 5,
 ): Self {.public.} =
   Self(
     nickname: nickname,
     inboundLength: inboundLength,
-    outboindLength: outboindLength,
+    outboundLength: outboundLength,
     inboundQuantity: inboundQuantity,
     outboundQuantity: outboundQuantity,
   )
@@ -73,7 +75,7 @@ proc init*(
 proc new*(
   Self: typedesc[I2PTransport],
   transportAddress: TransportAddress,
-  settings: I2PSessionSettings,
+  settings: I2PSettings,
   flags: set[ServerFlags] = {},
   upgrade: Upgrade): Self {.public.} =
 
@@ -88,20 +90,21 @@ proc handlesDial(address: MultiAddress): bool {.gcsafe.} =
   return I2P.match(address)
 
 proc handlesStart(address: MultiAddress): bool {.gcsafe.} =
-  return mapAnd(IP, mapEq("tcp")).match(address)
+  return TCPIP.match(address)
 
 proc connectToI2PServer(
     transportAddress: TransportAddress): Future[StreamTransport] {.async, gcsafe.} =
   let transp = await connect(transportAddress)
   try:
-    discard await transp.write(
-      sam.Message.hello
+    let message = sam.Message.hello
       .withMinVersion(SamMinVersion)
       .withMaxVersion(SamMaxVersion)
       .build()
-    )
+
+    debug "Sending handshake", message = message
+    discard await transp.write(message)
     let
-      serverReply = sam.Answer.fromString(await transp.readLine())
+      serverReply = sam.Answer.fromString(await transp.readLine(sep="\n"))
 
     if serverReply.kind != HelloReply:
       raise newException(I2PError, fmt"Invalid handshake reply: {serverReply}")
@@ -113,57 +116,75 @@ proc connectToI2PServer(
     await transp.closeWait()
     raise err
 
-proc createControlSession(transp: StreamTransport, settings: I2PSessionSettings): Future[void] {.async, gcsafe.} =
-  await transp.write(
-    sam.Message.sessionCreate(Stream, settings.nickname, TRANSIENT_DESTINATION)
+proc createControlSession(transp: StreamTransport, settings: I2PSettings): Future[string] {.async, gcsafe.} =
+  let destination = 
+    block:
+      let message = sam.Message.destGenerate()
+        .withSignatureType(ECDSA_SHA512_P521)
+        .build()
+      debug "Sending dest generate", nickname = settings.nickname, message = message
+      discard await transp.write(message)
+      
+      debug "Waiting dest reply", nickname = settings.nickname
+      let serverReply = sam.Answer.fromString(await transp.readLine(sep="\n"))
+      if serverReply.kind != DestReply:
+        raise newException(I2PError, fmt"Invalid dest generate reply: {serverReply}")
+      serverReply.dest
+
+  let message = sam.Message.sessionCreate(Stream, settings.nickname, destination.priv)
     .withInboundLength(settings.inboundLength)
     .withOutboundLength(settings.outboundLength)
     .withInboundQuantity(settings.inboundQuantity)
     .withOutboundQuantity(settings.outboundQuantity)
     .build()
-  )
-  let serverReply = sam.Answer.fromString(await transp.readLine())
+  
+  debug "Sending session create", nickname = settings.nickname
+  discard await transp.write(message)
+
+  debug "Waiting session status"
+  let serverReply = sam.Answer.fromString(await transp.readLine(sep="\n"))
 
   if serverReply.kind != SessionStatus:
     raise newException(I2PError, fmt"Invalid session create reply: {serverReply}")
   if serverReply.session.kind != Ok:
     raise newException(I2PError, fmt"Unsuccessful control session create: {serverReply.session}")
 
-proc createAcceptStream(transp: StreamTransport, settings: I2PSessionSettings): Future[void] {.async, gcsafe.} =
-  await transp.write(
-    sam.Message.streamAccept(settings.nickname)
+  return destination.pub
+
+proc createAcceptStream(transp: StreamTransport, settings: I2PSettings): Future[void] {.async, gcsafe.} =
+  let message = sam.Message.streamAccept(settings.nickname)
     .build()
-  )
-  let serverReply = sam.Answer.fromString(await transp.readLine())
+  
+  debug "Sending stream accept", message = message
+  discard await transp.write(message)
+  let serverReply = sam.Answer.fromString(await transp.readLine(sep="\n"))
   if serverReply.kind != StreamStatus:
     raise newException(I2PError, fmt"Invalid stream create reply: {serverReply}")
   if serverReply.stream.kind != Ok:
     raise newException(I2PError, fmt"Unsuccessful stream accept: {serverReply.session}")
 
-
 proc checkControlSession(self: I2PTransport) {.async, gcsafe.} =
   if self.controlSessionConnection.isNil:
-    trace "Createing control session"
+    debug "Creating control session", nickname = self.settings.nickname
     let transp = await connectToI2PServer(self.transportAddress)
-    await createControlSession(transp, self.settings)
+    self.publicDestination = some await createControlSession(transp, self.settings)
     self.controlSessionConnection = await self.tcpTransport.connHandler(transp, Opt.none(MultiAddress), Direction.Out)
 
 proc parseI2P(address: MultiAddress): string =
   string.fromBytes(address[multiCodec("dns")].get().protoArgument().get())
 
 proc dialPeer(
-    transp: StreamTransport, address: MultiAddress, settings: I2PSessionSettings) {.async, gcsafe.} =
+    transp: StreamTransport, address: MultiAddress, settings: I2PSettings) {.async, gcsafe.} =
   let address = if I2P.match(address):
     parseI2P(address)
   else:
     raise newException(LPError, fmt"Address not supported: {address}")
-
-  await transp.write(
-    sam.Message.streamConnect(settings.nickname, address)
+  
+  let message = sam.Message.streamConnect(settings.nickname, address)
     .build()
-  )
+  discard await transp.write(message)
 
-  let serverReply = sam.Answer.fromString(await transp.readLine())
+  let serverReply = sam.Answer.fromString(await transp.readLine(sep="\n"))
   if serverReply.kind != StreamStatus:
     raise newException(I2PError, fmt"Invalid stream create reply: {serverReply}")
   if serverReply.stream.kind != Ok:
@@ -193,24 +214,15 @@ method start*(
   self: I2PTransport,
   addrs: seq[MultiAddress]) {.async.} =
   ## listen on the transport
-  var listenAddrs: seq[MultiAddress]
+  await checkControlSession(self)
+  await procCall Transport(self).start(@[MultiAddress.init(fmt"/dns/{self.publicDestination.get()}/http").tryGet()])
 
-  for i, ma in addrs:
-    if not handlesStart(ma):
-      warn "Invalid address detected, skipping!", address = ma
-      continue
-    let listenAddress = ma[0..1].get()
-    listenAddrs.add(listenAddress)
-  
-  if listenAddrs.len != 0:
-    await procCall Transport(self).start(listenAddrs)
-  else:
-    raise newException(TransportStartError, "Tor Transport couldn't start, no supported addr was provided.")
-  
 method accept*(self: I2PTransport): Future[Connection] {.async, gcsafe.} =
   await checkControlSession(self)
   let transp = await connectToI2PServer(self.transportAddress)
   await createAcceptStream(transp, self.settings)
+  # skip destination
+  discard await transp.readLine(sep="\n")
   return await self.tcpTransport.connHandler(transp, Opt.none(MultiAddress), Direction.In)
 
 method stop*(self: I2PTransport) {.async, gcsafe.} =
@@ -227,7 +239,7 @@ type
 proc new*(
   Self: typedesc[I2PSwitch],
   i2pServer: TransportAddress,
-  settings: I2PSessionSettings,
+  settings: I2PSettings,
   rng: ref HmacDrbgContext,
   addresses: seq[MultiAddress] = @[],
   flags: set[ServerFlags] = {}): Self
@@ -255,5 +267,5 @@ proc new*(
 method addTransport*(s: I2PSwitch, t: Transport) =
   doAssert(false, "not implemented!")
 
-method getTorTransport*(s: I2PSwitch): Transport {.base.} =
+method getI2PTransport*(s: I2PSwitch): Transport {.base.} =
   return s.transports[0]
