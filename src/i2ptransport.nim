@@ -51,7 +51,7 @@ type
 
 
 const
-  I2P* = mapAnd(DNS, mapEq("http"))
+  I2P* = DNS
   TCPIP = mapAnd(IP, mapEq("tcp"))
   SamMinVersion = "3.1"
   SamMaxVersion = "3.1"
@@ -161,7 +161,7 @@ proc createAcceptStream(transp: StreamTransport, settings: I2PSettings): Future[
   if serverReply.kind != StreamStatus:
     raise newException(I2PError, fmt"Invalid stream create reply: {serverReply}")
   if serverReply.stream.kind != Ok:
-    raise newException(I2PError, fmt"Unsuccessful stream accept: {serverReply.session}")
+    raise newException(I2PError, fmt"Unsuccessful stream accept: {serverReply.stream}")
 
 proc checkControlSession(self: I2PTransport) {.async, gcsafe.} =
   if self.controlSessionConnection.isNil:
@@ -188,7 +188,7 @@ proc dialPeer(
   if serverReply.kind != StreamStatus:
     raise newException(I2PError, fmt"Invalid stream create reply: {serverReply}")
   if serverReply.stream.kind != Ok:
-    raise newException(I2PError, fmt"Unsuccessful stream create to `{address}` dest: {serverReply.session}")
+    raise newException(I2PError, fmt"Unsuccessful stream create to `{address}` dest: {serverReply.stream}")
 
 method dial*(
   self: I2PTransport,
@@ -215,7 +215,7 @@ method start*(
   addrs: seq[MultiAddress]) {.async.} =
   ## listen on the transport
   await checkControlSession(self)
-  await procCall Transport(self).start(@[MultiAddress.init(fmt"/dns/{self.publicDestination.get()}/http").tryGet()])
+  await procCall Transport(self).start(@[MultiAddress.init(fmt"/dns/{self.publicDestination.get()}").tryGet()])
 
 method accept*(self: I2PTransport): Future[Connection] {.async, gcsafe.} =
   await checkControlSession(self)
