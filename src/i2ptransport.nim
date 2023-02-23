@@ -48,8 +48,9 @@ type
   TransportStartError* = object of transport.TransportError
 
   I2PError* = object of CatchableError
-  StreamAcceptError* = object of I2PError
 
+logScope:
+  topics = "i2p transport"
 
 const
   I2P* = DNS
@@ -162,7 +163,7 @@ proc createAcceptStream(transp: StreamTransport, settings: I2PSettings): Future[
   if serverReply.kind != StreamStatus:
     raise newException(I2PError, fmt"Invalid stream create reply: {serverReply}")
   if serverReply.stream.kind != Ok:
-    raise newException(StreamAcceptError, fmt"Unsuccessful stream accept: {serverReply.stream}")
+    raise newException(I2PError, fmt"Unsuccessful stream accept: {serverReply.stream}")
 
 proc checkControlSession(self: I2PTransport) {.async, gcsafe.} =
   if self.controlSessionConnection.isNil:
@@ -170,6 +171,7 @@ proc checkControlSession(self: I2PTransport) {.async, gcsafe.} =
     let transp = await connectToI2PServer(self.transportAddress)
     self.publicDestination = some await createControlSession(transp, self.settings)
     self.controlSessionConnection = await self.tcpTransport.connHandler(transp, Opt.none(MultiAddress), Direction.Out)
+    self.controlSessionConnection.timeout = InfiniteDuration
 
 proc parseI2P(address: MultiAddress): string =
   string.fromBytes(address[multiCodec("dns")].get().protoArgument().get())
@@ -219,15 +221,12 @@ method start*(
   await procCall Transport(self).start(@[MultiAddress.init(fmt"/dns/{self.publicDestination.get()}").tryGet()])
 
 method accept*(self: I2PTransport): Future[Connection] {.async, gcsafe.} =
-  try:
-    await checkControlSession(self)
-    let transp = await connectToI2PServer(self.transportAddress)
-    await createAcceptStream(transp, self.settings)
-    # skip destination
-    discard await transp.readLine(sep="\n")
-    return await self.tcpTransport.connHandler(transp, Opt.none(MultiAddress), Direction.In)
-  except StreamAcceptError as e:
-    debug "Error on accept", error = e.msg
+  await checkControlSession(self)
+  let transp = await connectToI2PServer(self.transportAddress)
+  await createAcceptStream(transp, self.settings)
+  # skip destination
+  discard await transp.readLine(sep="\n")
+  return await self.tcpTransport.connHandler(transp, Opt.none(MultiAddress), Direction.In)
 
 method stop*(self: I2PTransport) {.async, gcsafe.} =
   await procCall Transport(self).stop() # call base
