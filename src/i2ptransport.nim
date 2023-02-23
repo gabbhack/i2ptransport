@@ -48,6 +48,7 @@ type
   TransportStartError* = object of transport.TransportError
 
   I2PError* = object of CatchableError
+  StreamAcceptError* = object of I2PError
 
 
 const
@@ -154,14 +155,14 @@ proc createControlSession(transp: StreamTransport, settings: I2PSettings): Futur
 proc createAcceptStream(transp: StreamTransport, settings: I2PSettings): Future[void] {.async, gcsafe.} =
   let message = sam.Message.streamAccept(settings.nickname)
     .build()
-  
+
   debug "Sending stream accept", message = message
   discard await transp.write(message)
   let serverReply = sam.Answer.fromString(await transp.readLine(sep="\n"))
   if serverReply.kind != StreamStatus:
     raise newException(I2PError, fmt"Invalid stream create reply: {serverReply}")
   if serverReply.stream.kind != Ok:
-    raise newException(I2PError, fmt"Unsuccessful stream accept: {serverReply.stream}")
+    raise newException(StreamAcceptError, fmt"Unsuccessful stream accept: {serverReply.stream}")
 
 proc checkControlSession(self: I2PTransport) {.async, gcsafe.} =
   if self.controlSessionConnection.isNil:
@@ -218,12 +219,15 @@ method start*(
   await procCall Transport(self).start(@[MultiAddress.init(fmt"/dns/{self.publicDestination.get()}").tryGet()])
 
 method accept*(self: I2PTransport): Future[Connection] {.async, gcsafe.} =
-  await checkControlSession(self)
-  let transp = await connectToI2PServer(self.transportAddress)
-  await createAcceptStream(transp, self.settings)
-  # skip destination
-  discard await transp.readLine(sep="\n")
-  return await self.tcpTransport.connHandler(transp, Opt.none(MultiAddress), Direction.In)
+  try:
+    await checkControlSession(self)
+    let transp = await connectToI2PServer(self.transportAddress)
+    await createAcceptStream(transp, self.settings)
+    # skip destination
+    discard await transp.readLine(sep="\n")
+    return await self.tcpTransport.connHandler(transp, Opt.none(MultiAddress), Direction.In)
+  except StreamAcceptError as e:
+    debug "Error on accept", error = e.msg
 
 method stop*(self: I2PTransport) {.async, gcsafe.} =
   await procCall Transport(self).stop() # call base
@@ -252,7 +256,7 @@ proc new*(
     let switch = builder.withMplex()
         .withNoise()
         .build()
-    let torSwitch = Self(
+    let i2pSwitch = Self(
       peerInfo: switch.peerInfo,
       ms: switch.ms,
       transports: switch.transports,
@@ -261,8 +265,8 @@ proc new*(
       dialer: Dialer.new(switch.peerInfo.peerId, switch.connManager, switch.transports, switch.ms, nil),
       nameResolver: nil)
 
-    torSwitch.connManager.peerStore = switch.peerStore
-    return torSwitch
+    i2pSwitch.connManager.peerStore = switch.peerStore
+    return i2pSwitch
 
 method addTransport*(s: I2PSwitch, t: Transport) =
   doAssert(false, "not implemented!")
