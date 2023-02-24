@@ -158,7 +158,7 @@ proc readInput(wfd: AsyncFD) {.thread.} =
 proc main() {.async.} =
   let
     rng = newRng() # Single random number source for the whole application
-
+    samAddress = initTAddress("127.0.0.1:7656")
     # Pipe to read stdin from main thread
     (rfd, wfd) = createAsyncPipe()
     stdinReader = fromPipe(rfd)
@@ -174,8 +174,9 @@ proc main() {.async.} =
   stdout.write "Input I2P nickname: "
 
   var switch = I2PSwitch.new(
-    initTAddress("127.0.0.1:7656"),
-    I2PSettings.init(stdin.readLine()),
+    samAddress,
+    I2PSessionSettings.init(stdin.readLine()),
+    await generateDestination(samAddress),
     rng
   )
 

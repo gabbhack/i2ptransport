@@ -5,20 +5,27 @@ import libp2p/protocols/ping
 
 import i2ptransport
 
+
 proc main() {.async, gcsafe.} =
   let
     rng = newRng()
     pingProtocol = Ping.new(rng=rng)
+    samAddress = initTAddress("127.0.0.1:7656")
 
   let
+    keyPair1 = await generateDestination(samAddress)
     switch1 = I2PSwitch.new(
-      initTAddress("127.0.0.1:7656"),
-      I2PSettings.init("first"),
+      samAddress,
+      I2PSessionSettings.init("first"),
+      keyPair1,
       rng
     )
+
+    keyPair2 = await generateDestination(samAddress)
     switch2 = I2PSwitch.new(
-      initTAddress("127.0.0.1:7656"),
-      I2PSettings.init("second"),
+      samAddress,
+      I2PSessionSettings.init("second"),
+      keyPair2,
       rng
     )
 
@@ -39,7 +46,7 @@ proc main() {.async, gcsafe.} =
   await conn.close()
 
   await allFutures(switch1.stop(), switch2.stop()) # close connections and shutdown all transports
-
+  echo "Done"
 
 when isMainModule:
   waitFor(main())
