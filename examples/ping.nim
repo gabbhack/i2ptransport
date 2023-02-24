@@ -10,20 +10,17 @@ proc main() {.async, gcsafe.} =
   let
     rng = newRng()
     pingProtocol = Ping.new(rng=rng)
-    samAddress = initTAddress("127.0.0.1:7656")
 
   let
-    keyPair1 = await generateDestination(samAddress)
+    keyPair1 = await generateDestination()
     switch1 = I2PSwitch.new(
-      samAddress,
       I2PSessionSettings.init("first"),
       keyPair1,
       rng
     )
 
-    keyPair2 = await generateDestination(samAddress)
+    keyPair2 = await generateDestination()
     switch2 = I2PSwitch.new(
-      samAddress,
       I2PSessionSettings.init("second"),
       keyPair2,
       rng

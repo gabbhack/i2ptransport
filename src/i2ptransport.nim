@@ -82,7 +82,7 @@ proc init*(
   outboundLength = 3,
   inboundQuantity = 5,
   outboundQuantity = 5,
-  signatureType = ECDSA_SHA512_P521
+  signatureType = EdDSA_SHA512_Ed25519
 ): Self {.public.} =
   Self(
     nickname: nickname,
@@ -106,8 +106,8 @@ proc init*(
 proc new*(
   Self: typedesc[I2PTransport],
   sessionSettings: I2PSessionSettings,
-  samAddress = initTAddress("127.0.0.1:7656"),
   keyPair: I2PKeyPair,
+  samAddress = initTAddress("127.0.0.1:7656"),
   flags: set[ServerFlags] = {},
   upgrade: Upgrade
 ): Self {.public.} =
@@ -180,16 +180,16 @@ type
 
 proc new*(
   Self: typedesc[I2PSwitch],
-  samAddress: TransportAddress,
   settings: I2PSessionSettings,
   keyPair: I2PKeyPair,
   rng: ref HmacDrbgContext,
+  samAddress = initTAddress("127.0.0.1:7656"),
   addresses: seq[MultiAddress] = @[],
   flags: set[ServerFlags] = {}): Self
   {.raises: [LPError, Defect], public.} =
     var builder = SwitchBuilder.new()
         .withRng(rng)
-        .withTransport(proc(upgr: Upgrade): Transport = I2PTransport.new(settings, samAddress, keyPair, flags, upgr))
+        .withTransport(proc(upgr: Upgrade): Transport = I2PTransport.new(settings, keyPair, samAddress, flags, upgr))
     if addresses.len != 0:
         builder = builder.withAddresses(addresses)
     let switch = builder.withMplex()
@@ -237,8 +237,8 @@ proc createControlConnection(self: I2PTransport) {.async, gcsafe.} =
   connection.timeout = InfiniteDuration
 
 proc generateDestination*(
-  samAddress: TransportAddress,
-  signatureType: sam.SignatureType = ECDSA_SHA512_P521
+  samAddress = initTAddress("127.0.0.1:7656"),
+  signatureType = EdDSA_SHA512_Ed25519
 ): Future[I2PKeyPair] {.async, gcsafe.} =
   let
     transport = await connectToSam(samAddress)
@@ -323,4 +323,3 @@ proc handlesStart(address: MultiAddress): bool {.gcsafe.} =
 
 proc parseI2P(address: MultiAddress): string {.gcsafe.} =
   string.fromBytes(address[multiCodec("dns")].get().protoArgument().get())
-
