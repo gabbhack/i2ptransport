@@ -96,6 +96,8 @@ proc handlesStart(address: MultiAddress): bool {.gcsafe.} =
 
 proc connectToI2PServer(
     transportAddress: TransportAddress): Future[StreamTransport] {.async, gcsafe.} =
+  debug "Connection to SAM", address = transportAddress
+
   let transp = await connect(transportAddress)
   try:
     let message = sam.Message.hello
