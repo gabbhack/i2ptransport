@@ -1,7 +1,7 @@
 # i2ptransport [![nim-version-img]][nim-version]
 
-[nim-version]: https://nim-lang.org/blog/2020/04/03/version-120-released.html
-[nim-version-img]: https://img.shields.io/badge/Nim_-v1.2.0%2B-blue
+[nim-version]: https://nim-lang.org/blog/2021/10/19/version-160-released.html
+[nim-version-img]: https://img.shields.io/badge/Nim_-v1.6.0%2B-blue
 
 **I2P Transport for** [nim-libp2p](https://github.com/status-im/nim-libp2p)
 

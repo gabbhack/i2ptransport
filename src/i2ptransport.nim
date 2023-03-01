@@ -1,9 +1,12 @@
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
-import std/[strformat, options]
+import std/[
+  strformat,
+  options,
+  importutils,
+  sequtils
+]
+
 import chronos, chronicles, strutils
 import stew/[
   byteutils,
@@ -26,6 +29,7 @@ import libp2p/transports/[
   tcptransport
 ]
 import libp2p/upgrademngrs/upgrade
+
 import sam_protocol as sam
 
 
@@ -73,6 +77,10 @@ proc createControlConnection(self: I2PTransport) {.async, gcsafe.}
 proc parseI2P(address: MultiAddress): string {.gcsafe.}
 proc connectStream(transport: StreamTransport, address: MultiAddress, settings: I2PSessionSettings) {.async, gcsafe.}
 proc acceptStream(transport: StreamTransport, settings: I2PSessionSettings) {.async, gcsafe.}
+proc connHandler*(self: TcpTransport,
+                  client: StreamTransport,
+                  observedAddr: Opt[MultiAddress],
+                  dir: Direction, timeout: Duration): Future[Connection] {.async.}
 
 
 proc init*(
@@ -232,9 +240,7 @@ proc createControlConnection(self: I2PTransport) {.async, gcsafe.} =
     await transport.closeWait()
     raise newException(I2PError, fmt"Unsuccessful control session create for nickname `{settings.nickname}`: {answer.session}")
 
-  let connection = await self.tcpTransport.connHandler(transport, Opt.none(MultiAddress), Direction.Out)
-  # The control connection must not disconnect by timeout
-  connection.timeout = InfiniteDuration
+  discard await self.tcpTransport.connHandler(transport, Opt.none(MultiAddress), Direction.Out, timeout = ZeroDuration)
 
 proc generateDestination*(
   samAddress = initTAddress("127.0.0.1:7656"),
@@ -323,3 +329,48 @@ proc handlesStart(address: MultiAddress): bool {.gcsafe.} =
 
 proc parseI2P(address: MultiAddress): string {.gcsafe.} =
   string.fromBytes(address[multiCodec("dns")].get().protoArgument().get())
+
+proc connHandler*(self: TcpTransport,
+                  client: StreamTransport,
+                  observedAddr: Opt[MultiAddress],
+                  dir: Direction, timeout: Duration): Future[Connection] {.async.} =
+  privateAccess(TcpTransport)
+
+  trace "Handling tcp connection", address = $observedAddr,
+                                   dir = $dir,
+                                   clients = self.clients[Direction.In].len +
+                                   self.clients[Direction.Out].len
+
+  let conn = Connection(
+    ChronosStream.init(
+      client = client,
+      dir = dir,
+      observedAddr = observedAddr,
+      timeout = timeout
+    ))
+
+  proc onClose() {.async.} =
+    try:
+      let futs = @[client.join(), conn.join()]
+      await futs[0] or futs[1]
+      for f in futs:
+        if not f.finished: await f.cancelAndWait() # cancel outstanding join()
+
+      trace "Cleaning up client", addrs = $client.remoteAddress,
+                                  conn
+
+      self.clients[dir].keepItIf( it != client )
+      await allFuturesThrowing(
+        conn.close(), client.closeWait())
+
+      trace "Cleaned up client", addrs = $client.remoteAddress,
+                                 conn
+
+    except CatchableError as exc:
+      let useExc {.used.} = exc
+      debug "Error cleaning up client", errMsg = exc.msg, conn
+
+  self.clients[dir].add(client)
+  asyncSpawn onClose()
+
+  return conn
