@@ -328,7 +328,7 @@ proc handlesStart(address: MultiAddress): bool {.gcsafe.} =
   return TCPIP.match(address)
 
 proc parseI2P(address: MultiAddress): string {.gcsafe.} =
-  string.fromBytes(address[multiCodec("dns")].get().protoArgument().get())
+  return string.fromBytes(address[multiCodec("dns")].get().protoArgument().get())
 
 proc connHandler*(self: TcpTransport,
                   client: StreamTransport,

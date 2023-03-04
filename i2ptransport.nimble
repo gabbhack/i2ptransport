@@ -1,6 +1,6 @@
 # Package
 
-version       = "0.1.3"
+version       = "0.1.4"
 author        = "Gabben"
 description   = "I2P Transport for libp2p"
 license       = "MIT"
@@ -11,4 +11,4 @@ skipDirs      = @["tests", "examples"]
 
 requires "nim >= 1.6.0",
          "libp2p",
-         "https://github.com/gabbhack/sam_protocol >= 0.1.1"
+         "samprotocol >= 0.1.1"
